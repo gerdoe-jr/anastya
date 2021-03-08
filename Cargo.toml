@@ -1,17 +1,24 @@
 [package]
-name = "rust-discord-bot"
+name = "trdbwr"
 version = "0.1.0"
 authors = ["Vlad <gerdoexx@gmail.com>"]
 edition = "2018"
 
+[dependencies]
+dotenv = "0.15"
+tracing = "0.1.23"
+tracing-subscriber = "0.2"
+
 [dependencies.songbird]
-path = "../../../"
+git = "https://github.com/serenity-rs/songbird.git"
+branch = "current"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies.serenity]
 git = "https://github.com/serenity-rs/serenity.git"
-features = ["client", "gateway", "rustls_backend", "voice", "model", "framework", "standard_framework"]
+branch = "current"
+features = ["client", "gateway", "voice", "model", "framework", "standard_framework"]
 
 [dependencies.tokio]
 version = "1.0"
-features = ["macros", "rt-multi-thread"]
+features = ["signal", "macros", "rt-multi-thread"]

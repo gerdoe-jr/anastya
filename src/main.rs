@@ -1,5 +1,7 @@
 extern crate serenity;
 
+mod groups;
+
 use std::{collections::{HashMap, HashSet}, env, fmt::Write, sync::Arc};
 use serenity::{
     async_trait,
@@ -17,14 +19,25 @@ use serenity::{
         id::UserId,
         permissions::Permissions,
     },
+    prelude::*,
     utils::{content_safe, ContentSafeOptions},
 };
 
-
-use songbird::SerenityInit;
-use serenity::prelude::*;
 use tokio::sync::Mutex;
 
+use tracing::{error, info};
+use tracing_subscriber::{
+    FmtSubscriber,
+    EnvFilter,
+};
+
+use groups::{
+    administrate::*,
+    moderate::*,
+    /* */
+};
+
+use songbird::SerenityInit;
 // A container type is created for inserting into the Client's `data`, which
 // allows for data to be accessible across all events and framework commands, or
 // anywhere else that has a copy of the `data` Arc.
@@ -54,7 +67,7 @@ impl EventHandler for Handler {
 #[prefixes("admin", "adm", "a")]
 #[summary = "Administrate!"]
 #[description = "Commands for server administrating."]
-#[default_command(admin_help)]
+// #[default_command(admin_help)]
 #[commands(server_related, category_related, channel_related, role_related)]
 struct Administrate;
 
@@ -175,16 +188,31 @@ fn _dispatch_error_no_macro<'fut>(ctx: &'fut mut Context, msg: &'fut Message, er
     }.boxed()
 }
 
-/// hooks
+/// # ////////////// # ///
+/// # MAIN ///////// # ///
+/// # ////////////// # ///
 
 #[tokio::main]
 async fn main() {
-    // Configure the client with your Discord bot token in the environment.
-    let token = env::var("DISCORD_TOKEN").expect(
-        "Expected a token in the environment",
-    );
+    // This will load the environment variables located at `./.env`, relative to
+    // the CWD. See `./.env.example` for an example on how to structure this.
+    dotenv::dotenv().expect("Failed to load .env file");
+
+    // Initialize the logger to use environment variables.
+    //
+    // In this case, a good default is setting the environment variable
+    // `RUST_LOG` to debug`.
+    let subscriber = FmtSubscriber::builder()
+        .with_env_filter(EnvFilter::from_default_env())
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to start the logger");
+
+    let token = env::var("DISCORD_TOKEN")
+        .expect("Expected a token in the environment");
 
     let http = Http::new_with_token(&token);
+
 
     // We will fetch your bot's owners and id
     let (owners, bot_id) = match http.get_current_application_info().await {
@@ -252,8 +280,7 @@ async fn main() {
     // They're made in the pattern: `#name_GROUP` for the group instance and `#name_GROUP_OPTIONS`.
     // #name is turned all uppercase
         .help(&MY_HELP)
-        .group(&ADMINISTRATE_GROUP)
-        .group(&OWNER_GROUP);
+        .group(&ADMINISTRATE_GROUP);
 
     let mut client = Client::builder(&token)
         .event_handler(Handler)
@@ -270,6 +297,11 @@ async fn main() {
     if let Err(why) = client.start().await {
         println!("Client error: {:?}", why);
     }
+
+    tokio::spawn(async move {
+        tokio::signal::ctrl_c().await.expect("Could not register ctrl+c handler");
+        &client.shard_manager.lock().await.shutdown_all().await;
+    });
 }
 
 // Commands can be created via the attribute `#[command]` macro.
