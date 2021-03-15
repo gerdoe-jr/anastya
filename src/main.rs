@@ -34,6 +34,7 @@ use tracing_subscriber::{
 use groups::{
     administrate::*,
     moderate::*,
+    mapmake::*,
     /* */
 };
 
@@ -70,6 +71,10 @@ impl EventHandler for Handler {
 // #[default_command(admin_help)]
 #[commands(server_related, category_related, channel_related, role_related)]
 struct Administrate;
+
+#[group]
+#[commands(generate_map)]
+struct MapMake;
 
 /* #[group]
 #[owners_only]
@@ -213,7 +218,6 @@ async fn main() {
 
     let http = Http::new_with_token(&token);
 
-
     // We will fetch your bot's owners and id
     let (owners, bot_id) = match http.get_current_application_info().await {
         Ok(info) => {
@@ -280,7 +284,8 @@ async fn main() {
     // They're made in the pattern: `#name_GROUP` for the group instance and `#name_GROUP_OPTIONS`.
     // #name is turned all uppercase
         .help(&MY_HELP)
-        .group(&ADMINISTRATE_GROUP);
+        .group(&ADMINISTRATE_GROUP)
+        .group(&MAPMAKE_GROUP);
 
     let mut client = Client::builder(&token)
         .event_handler(Handler)
