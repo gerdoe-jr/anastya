@@ -25,7 +25,6 @@ use serenity::{
 
 use tokio::sync::Mutex;
 
-use tracing::{error, info};
 use tracing_subscriber::{
     FmtSubscriber,
     EnvFilter,

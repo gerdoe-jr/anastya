@@ -1,6 +1,6 @@
 extern crate image;
 
-use rand::{thread_rng, Rng};
+use std::time::Instant;
 use std::fs::File;
 
 use serenity::prelude::*;
@@ -13,25 +13,99 @@ use serenity::framework::standard::{
     macros::command,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Map {
-    tiles: Vec<Vec<Tile>>,
+async fn get_map(m: ndarray::Array2<twmap::GameTile>) -> twmap::TwMap {
+    let mut map = twmap::TwMap::empty(twmap::Version::DDNet06);
+
+    let game = twmap::CompressedData::Loaded(m);
+
+    map.groups.push(twmap::Group::game());
+    map.groups[0].layers.push(twmap::Layer::Game(twmap::GameLayer { tiles: game }));
+
+    map
 }
 
-impl Map {
-    pub fn new(self, w: usize, h: usize, gen: fn(usize, usize)) -> Self {
-
-    }
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Map {
+    tiles: ndarray::Array2<Tile>,
+    width: usize,
+    height: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Tile {
-    tile: TileType
+    pos: Point,
+    tile: TileType,
+    visited: bool
 }
 
 impl Tile {
-    pub fn get_neighbors(self, cnt: Vec<Vec<Tile>>) -> Vec<Point> {
-        vec![]
+    pub fn get_neighbors(self, map: &mut Map, filter: TileType, eight: bool) -> Vec<Tile> {
+        let x = self.pos.x.clone();
+        let y = self.pos.y.clone();
+
+        let mut neighbors = vec![];
+
+        if x >= 2 {
+            if map.tiles[[x - 1, y]].tile == filter {
+                neighbors.push(map.tiles[[x - 1, y]]);
+            }
+
+            if y >= 2 && map.tiles[[x - 1, y - 1]].tile == filter && eight {
+                neighbors.push(map.tiles[[x - 1, y - 1]]);
+            }
+            if y <= map.height - 2 && map.tiles[[x - 1, y + 1]].tile == filter && eight {
+                neighbors.push(map.tiles[[x - 1, y + 1]]);
+            }
+
+        }
+        if x <= map.width - 2 {
+            if map.tiles[[x + 1, y]].tile == filter {
+                neighbors.push(map.tiles[[x + 1, y]]);
+            }
+
+            if y >= 2 && map.tiles[[x + 1, y - 1]].tile == filter && eight {
+                neighbors.push(map.tiles[[x + 1, y - 1]]);
+            }
+            if y <= map.height - 2 && map.tiles[[x + 1, y + 1]].tile == filter && eight {
+                neighbors.push(map.tiles[[x + 1, y + 1]]);
+            }
+        }
+
+        if y >= 2 && map.tiles[[x, y - 1]].tile == filter {
+            neighbors.push(map.tiles[[x, y - 1]]);
+        }
+        if y <= map.height - 2 && map.tiles[[x, y + 1]].tile == filter {
+            neighbors.push(map.tiles[[x, y + 1]]);
+        }
+
+        neighbors
+    }
+
+    pub fn get_good_neighbors(self, map: &mut Map) -> Vec<Tile> {
+        let neighbors = self.get_neighbors(map, TileType::Solid, false);
+
+        let mut n: Vec<Tile> = vec![];
+
+        for j in neighbors.iter() {
+            let nx = j.pos.x as isize - self.pos.x as isize;
+            let ny = j.pos.y as isize - self.pos.y as isize;
+
+            for i in -1..1 as isize {
+                let x = j.pos.x as isize + nx + i;
+                let y = j.pos.y as isize + ny + i;
+
+                if x < 2 || x >= map.width as isize - 2 || y < 2 || y >= map.width as isize - 2 {
+                    continue;
+                }
+
+                if map.tiles[[x as usize, y as usize]].tile == TileType::Solid {
+                    n.push(map.tiles[[j.pos.x, j.pos.y]]);
+                }
+            }
+        }
+
+
+        n
     }
 }
 
@@ -41,12 +115,6 @@ struct Point {
     y: usize
 }
 
-impl Point {
-    pub fn new(nx: usize, ny: usize) -> Self {
-        Point{ x: nx, y: ny }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TileType {
     Air,
@@ -54,193 +122,145 @@ enum TileType {
     Unhookable
 }
 
-enum Direction {
-    Up,
-    Down,
-    Left,
-    Right
-}
-
 #[command("gen_map")]
 pub async fn generate_map(ctx: &Context, msg: &Message, real_args: Args) -> CommandResult {
     let mut args = Args::new(real_args.message(), &[Delimiter::Single(' ')]);
     let width = args.single::<usize>()?;
     let height = args.single::<usize>()?;
-    let depth = args.single::<usize>()?;
-    let iters = args.single::<usize>()?;
 
-    let map = map_algorithm(width, height, depth).await;
+    let start = Instant::now();
+
+    // let mut n_msg = msg.channel_id.say(&ctx.http, "Generating map").await.unwrap();
+
+    let mut map = map_algorithm(width, height).await;
+
+    let _ = map.save_file("map.map");
+
+    // let _ = n_msg.edit(&ctx, |m| m.content(format!("Map was converted to .map"))).await;
 
     let imgbuf = image::ImageBuffer::from_fn(width as u32, height as u32,
         |x, y| {
-            // println!("{:?}, {} {}", map[x as usize][y as usize], x, y);
-            if map[x as usize][y as usize] == TileType::Air {
+            let wtf: twmap::GameLayer = match &map.groups[0].layers[0] {
+                twmap::Layer::Game(l) => l.clone(),
+                _ => panic!("Got something wrong instead of Game layer.")
+            };
+
+            if wtf.tiles.unwrap()[[x as usize, y as usize]].id == 0 {
                 image::Rgb([255, 255, 255])
             }
             else {
                 image::Rgb([0, 0, 0]) 
             }
         });
-
-    let output = image::DynamicImage::ImageRgb16(imgbuf)
-        /*.thumbnail((width * 2) as u32, (height * 2) as u32)*/
+    let _ = image::DynamicImage::ImageRgb16(imgbuf)
         .write_to(&mut File::create("map.png")?, image::ImageOutputFormat::Png)?;
+    
+    // let _ = n_msg.edit(&ctx, |m| m.content(format!("Map was converted to .png"))).await;
 
-    let _ = msg.channel_id.send_files(&ctx.http, vec!["map.png"], |m| {
-        m.content(format!("Width: {}\nHeight: {}\nDepth of penetration: {}", width, height, depth)) }).await;
+
+
+    let _ = msg.channel_id.send_files(&ctx.http, vec!["map.png", "map.map"], |m| {
+        m.content(format!("Width: {}\nHeight: {}\n\nTime elapsed: {:?}", width, height, start.elapsed())) }).await;
+
+    // let _ = n_msg.delete(&ctx.http).await;
 
 
     Ok(())
 }
 
-async fn map_algorithm(width: usize, height: usize, depth: usize) -> Vec<Vec<TileType>> {
-    let mut map: Vec<Vec<TileType>> = vec![vec![TileType::Solid; width]; height];
-    // println!("{:?}", map);
+async fn map_algorithm(w: usize, h: usize) -> twmap::TwMap {
+    let mut map = Map {
+        tiles: vec![vec![Tile { pos: Point { x: 0, y: 0 }, tile: TileType::Solid, visited: false }; h]; w],
+        width: w,
+        height: h
+    };
 
-    let mut rng = thread_rng();
-    let x = (rng.gen_range(0..(width / 2)) * 2 + 1) as usize;
-    let y = (rng.gen_range(0..(height / 2)) * 2 + 1) as usize;
-    map[x][y] = TileType::Air;
+    for x in 0..w {
+        for y in 0..h {
+            map.tiles[[x, y]].pos.x = x;
+            map.tiles[[x, y]].pos.y = y;
+        }
+    }
 
-    println!("{:?}", map[x][y]);
+    let mut rng = urandom::new();
 
-    let mut checkers: Vec<Point> = Vec::new();
+    let x = (rng.range(0..(map.width / 2)) * 2 + 1) as usize;
+    let y = (rng.range(0..(map.height / 2)) * 2 + 1) as usize;    
+    map.tiles[[x, y]].tile = TileType::Air;
 
-    if x >= 1 {
-        checkers.push(Point::new(x - 1, y));
-    }
-    if x + 1 < width {
-        checkers.push(Point::new(x + 1, y));
-    }
-    if y >= 1 {
-        checkers.push(Point::new(x, y - 1));
-    }
-    if y + 1 < height {
-        checkers.push(Point::new(x, y + 1));
-    }
+    println!("{:?}", map.tiles[[x, y]]);
+
+    let mut checkers = vec![map.tiles[[x, y]]];
 
     while !checkers.is_empty() {
-        let i = rng.gen_range(0..checkers.len()) as usize;
-        map[checkers[i].x][checkers[i].y] = TileType::Air;
+        let i = rng.range(0..checkers.len() as usize);
 
-        let j = rng.gen_range(0..4) as usize;
-
-        match j {
-            0 => {
-                if checkers[i].y >= 1 && map[checkers[i].x][checkers[i].y - 1] == TileType::Solid {
-                    map[checkers[i].x][checkers[i].y - 1] = TileType::Air;
-                }
-            },
-            1 => {
-                if checkers[i].y + 1 < height && map[checkers[i].x][checkers[i].y + 1] == TileType::Solid {
-                    map[checkers[i].x][checkers[i].y + 1] = TileType::Air;
-                }
-            },
-            2 => {
-                if checkers[i].x >= 1 && map[checkers[i].x - 1][checkers[i].y] == TileType::Solid {
-                    map[checkers[i].x - 1][checkers[i].y] = TileType::Air;
-                }
-            },
-            3 => {
-                if checkers[i].x + 1 < width && map[checkers[i].x + 1][checkers[i].y] == TileType::Solid {
-                    map[checkers[i].x + 1][checkers[i].y] = TileType::Air;
-                }
-            },
-            _ => { }
+        if map.tiles[[checkers[i].pos.x, checkers[i].pos.y]].tile == TileType::Air && map.tiles[[checkers[i].pos.x, checkers[i].pos.y]].visited == true {
+            checkers.remove(i);
+            continue;
         }
 
-        // Add valid cells that are two orthogonal spaces away from the cell you cleared.
-        if checkers[i].y >= 1 && map[checkers[i].x][checkers[i].y - 1] == TileType::Solid {
-            checkers.push(Point::new(checkers[i].x, checkers[i].y - 1));
-        }
-        if checkers[i].y + 1 < height && map[checkers[i].x][checkers[i].y + 1] == TileType::Solid {
-            checkers.push(Point::new(checkers[i].x, checkers[i].y + 1));
-        }
-        if checkers[i].x >= 1 && map[checkers[i].x - 1][checkers[i].y] == TileType::Solid {
-            checkers.push(Point::new(checkers[i].x - 1, checkers[i].y));
-        }
-        if checkers[i].x + 1 < width && map[checkers[i].x + 1][checkers[i].y] == TileType::Solid {
-            checkers.push(Point::new(checkers[i].x + 1, checkers[i].y));
+        let mut n = checkers[i].get_neighbors(&mut map, TileType::Solid, false);
+
+        let d = checkers[i].get_good_neighbors(&mut map)
+        .iter()
+        .filter(|t| t.tile == TileType::Solid)
+        .cloned()
+        .collect::<Vec<Tile>>();
+
+        if n.len() >= 3 && d.len() >= 3 && map.tiles[[checkers[i].pos.x, checkers[i].pos.y]].visited == false {
+            map.tiles[[checkers[i].pos.x, checkers[i].pos.y]].tile = TileType::Air;
+
+            while !n.is_empty() {
+                let j = rng.range(0..n.len() as usize);
+                if n[j].get_neighbors(&mut map, TileType::Solid, true).len() >= 5 && map.tiles[[n[j].pos.x, n[j].pos.y]].visited == false {
+                    checkers.push(n[j]);
+                }
+                n.remove(j);
+            }
+
+            
         }
 
+        map.tiles[[checkers[i].pos.x, checkers[i].pos.y]].visited = true;
         checkers.remove(i);
-        println!("{}", checkers.len());
     }
 
-    for _ in 0..depth {
-        let mut deadlock: Vec<Point> = Vec::new();
+    let u8_map: ndarray::Array2<twmap::GameTile> = ndarray::Array2::from_shape_fn((map.width, map.height),
+    |(i, j)| { if map.tiles[[i, j]].tile == TileType::Solid { twmap::GameTile::new(1, twmap::TileFlags::empty()) } else { twmap::GameTile::new(0, twmap::TileFlags::empty()) }});
 
-        for h in 0..height {
-            for w in 0..width {
-                if map[w][h] == TileType::Air {
-                    let mut neighbors = 0;
-                    if h >= 1 && map[w][h - 1] == TileType::Air {
-                        neighbors += 1;
-                    }
-                    if h + 1 < height && map[w][h + 1] == TileType::Air {
-                        neighbors += 1;
-                    }
-                    if w >= 1 && map[w - 1][h] == TileType::Air {
-                        neighbors += 1;
-                    }
-                    if w + 1 < width && map[w + 1][h] == TileType::Air {
-                        neighbors += 1;
-                    }
+    get_map(u8_map).await
 
-                    if neighbors <= 1 {
-                        deadlock.push(Point::new(w, h));
-                    }
-                }
-            }
-        }
+    // let mut scaled_map: Map = Map {
+    //     tiles: vec![vec![Tile { pos: Point { x: 0, y: 0 }, tile: TileType::Solid, visited: false }; map.width * 4]; map.height * 4],
+    //     width: map.width * 4,
+    //     height: map.height * 4
+    // };
 
-        for d in deadlock.iter() {
-            map[d.x][d.y] = TileType::Solid;
-        }
-    }
+    // for x in 0..map.width {
+    //     for y in 0..map.height {
+    //         for m in 0..4 {
+    //             for n in 0..4 {
+    //                 scaled_map.tiles[x * 4 + m][y * 4 + n].pos.x = x * 4 + m;
+    //                 scaled_map.tiles[x * 4 + m][y * 4 + n].pos.y = y * 4 + n;
+    //                 scaled_map.tiles[x * 4 + m][y * 4 + n].tile = map.tiles[x][y].tile;
+    //                 scaled_map.tiles[x * 4 + m][y * 4 + n].visited = false;
+    //             }
+    //         }
+    //     }
+    // }
 
-    /*for _ in 0..depth {
-        // Add cell to the list if it has four or more cleared neighbors.
-        let mut cleaning: Vec<Point> = Vec::new();
-        for h in 0..height {
-            for w in 0..width {
-                if map[w][h] == TileType::Solid {
-                    let mut neighbors = 0;
+    // for x in 0..scaled_map.width {
+    //     for y in 0..scaled_map.height {
+    //         let n = scaled_map.tiles[x][y].get_neighbors(&mut scaled_map, false);
+    //         let r = rng.range(0..n.len() as usize);
+    //         if scaled_map.tiles[n[r].pos.x][n[r].pos.y].visited == false {
+    //             scaled_map.tiles[n[r].pos.x][n[r].pos.y].tile = TileType::Air;
+    //         }
+    //     }
+    // }
 
-                    for a in 0..3 {
-                        for b in 0..3 {
-                            let mut nx = 0usize;
-                            let mut ny = 0usize;
-
-                            if w as i32 - a as i32 >= 0 {
-                                nx = w - a;
-                            }
-                            if h as i32 - b as i32 >= 0 {
-                                ny = h - b;
-                            }
-
-                            if nx < width && ny < height {
-                                if map[nx][ny] == TileType::Air
-                                 {
-                                    neighbors += 1;
-                                }
-                            }
-                        }
-                    }
-
-                    if neighbors >= 4 {
-                        cleaning.push(Point::new(w, h));
-                    }
-                }
-            }
-        }
-      
-        for c in cleaning.iter() {
-            map[c.x][c.y] = TileType::Air;
-        }
-    }*/
-
-    println!("{:?}", map[x][y]);
+    // println!("{:?}", map.tiles[x][y]);
     
-    map
+    // map
 }
