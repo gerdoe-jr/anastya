@@ -1,7 +1,6 @@
 extern crate image;
 
 use std::time::Instant;
-use std::fs::File;
 
 use serenity::prelude::*;
 use serenity::model::{
@@ -36,6 +35,12 @@ struct Tile {
     pos: Point,
     tile: TileType,
     visited: bool
+}
+
+struct Neighbors {
+    ortho: [Tile; 4],
+    diago: [Tile; 4],
+
 }
 
 impl Tile {
@@ -119,15 +124,27 @@ struct Point {
 enum TileType {
     Air = 0,
     Solid = 1,
-    Unhookable = 3
+    Unhookable = 3,
+    Freeze = 9
 }
 
 fn tile_to_gametile(tile: &TileType) -> twmap::GameTile {
-    twmap::GameTile::new(*tile as usize, twmap::TileFlags::empty())
+    twmap::GameTile::new(*tile as u8, twmap::TileFlags::empty())
 }
 
-async fn resize_array(array: &ndarray::Array2<twmap::GameTile>, w: usize, h: usize, scale: usize) -> ndarray::Array2<twmap::GameTile> {
+async fn resize_array_as_gt(array: &ndarray::Array2<twmap::GameTile>, w: usize, h: usize, scale: usize) -> ndarray::Array2<twmap::GameTile> {
     ndarray::Array2::from_shape_fn((w * scale, h * scale), |(x, y)| { println!("x: {} -> {} y: {} -> {}", x, x / scale, y, y / scale); array[[x / scale, y / scale]] })
+}
+
+async fn resize_array_as_t(array: &ndarray::Array2<Tile>, w: usize, h: usize, scale: usize) -> ndarray::Array2<Tile> {
+    ndarray::Array2::from_shape_fn((w * scale, h * scale), |(x, y)| {
+        println!("x: {} -> {} y: {} -> {}", x, x / scale, y, y / scale);
+        let mut t = array[[x / scale, y / scale]];
+        t.pos.x = x;
+        t.pos.y = y;
+
+        t
+    })
 }
 
 #[command("gen_map")]
@@ -142,32 +159,33 @@ pub async fn generate_map(ctx: &Context, msg: &Message, real_args: Args) -> Comm
 
     let mut map = map_algorithm(width, height).await;
 
-    let _ = map.save_file("map.map");
+    let _ = map.save_file("./maps/map.map");
 
     println!("Map was converted to .map");
 
-    let imgbuf = image::ImageBuffer::from_fn(3 * width as u32, 3 * height as u32,
-        |x, y| {
-            let wtf: twmap::GameLayer = match &map.groups[0].layers[0] {
-                twmap::Layer::Game(l) => l.clone(),
-                _ => panic!("Got something wrong instead of Game layer.")
-            };
+    let wtf: twmap::GameLayer = match &map.groups[0].layers[0] {
+        twmap::Layer::Game(l) => l.clone(),
+        _ => panic!("Got something wrong instead of Game layer.")
+    };
 
-            if wtf.tiles.unwrap()[[x as usize, y as usize]].id == 0 {
+    let imgbuf = image::ImageBuffer::from_fn(width as u32, height as u32,
+        |x, y| {
+
+
+            if wtf.to_owned().tiles.unwrap()[[x as usize, y as usize]].id == 0 {
                 image::Rgb([255, 255, 255])
             }
             else {
                 image::Rgb([0, 0, 0]) 
             }
         });
+
     let _ = image::DynamicImage::ImageRgb16(imgbuf)
-        .write_to(&mut File::create("map.png")?, image::ImageOutputFormat::Png)?;
-    
+        .write_to(&mut std::fs::File::create("map.png")?, image::ImageOutputFormat::Png)?;
+
         println!("Map was converted to .png");
 
-
-
-    let _ = msg.channel_id.send_files(&ctx.http, vec!["map.png", "map.map"], |m| {
+    let _ = msg.channel_id.send_files(&ctx.http, vec!["map.png","map.map"], |m| {
         m.content(format!("Width: {}\nHeight: {}\n\nTime elapsed: {:?}", width, height, start.elapsed())) }).await;
 
     // let _ = n_msg.delete(&ctx.http).await;
@@ -229,17 +247,42 @@ async fn map_algorithm(w: usize, h: usize) -> twmap::TwMap {
     }
 
     for _ in 0..4 {
-        let deadlocks: Vec<Tile> = vec![];
         for x in 0..map.width {
             for y in 0..map.height {
-                
+                if map.tiles[[x, y]].get_neighbors(&mut map, TileType::Air, false).len() == 1 {
+                    map.tiles[[x, y]].tile = TileType::Solid;
+                }
             }
         }
     }
 
-    let gt_map: ndarray::Array2<twmap::GameTile> = ndarray::Array2::from_shape_fn((map.width, map.height),
-    |(i, j)| { tile_to_gametile(&map.tiles[[i, j]].tile) 
-    });
+    let mut nmap = map.clone();
 
-    get_map(resize_array(&gt_map, map.width, map.height, 3).await).await
+    for _ in 0..16 {
+        for x in 0..map.width {
+            for y in 0..map.height {
+                if map.tiles[[x, y]].tile == TileType::Air {
+                    for i in map.tiles[[x, y]].get_neighbors(&mut map, TileType::Solid, false) {
+                        nmap.tiles[[i.pos.x, i.pos.y]].tile = TileType::Air;
+                    }
+                }
+            }
+        }
+    }
+
+    // map.tiles = resize_array_as_t(&map.tiles, map.width, map.height, 5).await;
+
+    // for x in 0..map.width * 5 {
+    //     for y in 0..map.width * 5 {
+    //         if map.tiles[[x, y]].tile == TileType::Air && map.tiles[[x, y]].get_neighbors(&mut map, TileType::Solid, true).len() != 0 {
+    //             map.tiles[[x, y]].tile = TileType::Freeze;
+    //         }
+            
+    //     }
+    // }
+
+    let gt_map: ndarray::Array2<twmap::GameTile> = ndarray::Array2::from_shape_fn((map.width, map.height),
+    |(i, j)| { tile_to_gametile(&nmap.tiles[[i, j]].tile) });
+
+    get_map(gt_map).await
 }

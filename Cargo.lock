@@ -31,6 +31,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "anastya"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "dotenv",
+ "image",
+ "ndarray",
+ "serenity 0.10.2 (git+https://github.com/serenity-rs/serenity.git?branch=current)",
+ "songbird",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "twmap",
+ "urandom",
+]
+
+[[package]]
 name = "ansi_term"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2269,22 +2286,6 @@ dependencies = [
  "tracing-core",
  "tracing-log",
  "tracing-serde",
-]
-
-[[package]]
-name = "trdbwr"
-version = "0.1.0"
-dependencies = [
- "dotenv",
- "image",
- "ndarray",
- "serenity 0.10.2 (git+https://github.com/serenity-rs/serenity.git?branch=current)",
- "songbird",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "twmap",
- "urandom",
 ]
 
 [[package]]
